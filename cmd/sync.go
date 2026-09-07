@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/cli/go-gh/v2/pkg/prompter"
 	"github.com/github/gh-stack/internal/config"
 	"github.com/github/gh-stack/internal/git"
+	"github.com/github/gh-stack/internal/github"
 	"github.com/github/gh-stack/internal/modify"
 	"github.com/github/gh-stack/internal/stack"
 	"github.com/spf13/cobra"
@@ -286,7 +288,15 @@ func runSync(cfg *config.Config, opts *syncOptions) error {
 		cfg.Printf("Merged: %s", strings.Join(names, ", "))
 	}
 
-	// --- Step 5b: Reconcile the remote stack object ---
+	// --- Step 5b: Update PR bodies with stack TOC ---
+	// After syncing PR associations, write a table-of-contents block into each
+	// open PR's body so reviewers can navigate the stack. Skipped for single-PR
+	// stacks (no TOC needed) and silently best-effort on errors.
+	if client, err := cfg.GitHubClient(); err == nil {
+		updatePRBodiesWithTOC(cfg, client, s)
+	}
+
+	// --- Step 5c: Reconcile the remote stack object ---
 	// syncStackPRs above only refreshes local PR associations; it does not touch
 	// the stack object on GitHub. When the branches have open PRs, link them into
 	// a stack so the remote reflects the local stack. This never opens PRs — that
@@ -460,4 +470,197 @@ func confirmPrune(cfg *config.Config, prompt string, defaultValue bool) (bool, e
 	}
 	p := prompter.New(cfg.In, cfg.Out, cfg.Err)
 	return p.Confirm(prompt, defaultValue)
+}
+
+// stackTOCHeader is the sentinel line that begins the TOC block injected into
+// each PR body. It is used to detect and strip any previously written block.
+const stackTOCHeader = "<!-- gh-stack-toc -->"
+
+// generateStackTOC builds a markdown table-of-contents listing all open PRs in
+// the stack, bottom-to-top (trunk side first). The PR identified by currentPR
+// is annotated with an arrow marker. Returns an empty string when the stack has
+// fewer than two open PRs (no TOC needed for a solo PR).
+// generateStackTOC builds a markdown table-of-contents listing all open PRs in
+// the stack, bottom-to-top (trunk side first). titles maps PR number to its
+// title; when a title is absent the branch name is used as a fallback.
+// The PR identified by currentPR is annotated with an arrow marker.
+// Returns an empty string when the stack has fewer than two open PRs.
+func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) string {
+	// Collect open (not merged, not queued) PRs in bottom-to-top stack order.
+	type entry struct {
+		number int
+		url    string
+		branch string
+	}
+
+	var entries []entry
+	for _, b := range s.Branches {
+		if b.PullRequest == nil || b.PullRequest.Number == 0 {
+			continue
+		}
+		if b.IsMerged() || b.IsQueued() {
+			continue
+		}
+		entries = append(entries, entry{
+			number: b.PullRequest.Number,
+			url:    b.PullRequest.URL,
+			branch: b.Branch,
+		})
+	}
+
+	if len(entries) < 2 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(stackTOCHeader + "\n")
+	sb.WriteString("**Stack**\n")
+	for _, e := range entries {
+		marker := ""
+		if e.number == currentPR {
+			marker = " ← _you are here_"
+		}
+		label := titles[e.number]
+		if label == "" {
+			label = e.branch
+		}
+		if e.url != "" {
+			// fmt.Fprintf(&sb, "- [#%d %s](%s)%s\n", e.number, label, e.url, marker)
+			fmt.Fprintf(&sb, "- #%d%s\n", e.number, marker)
+		} else {
+			fmt.Fprintf(&sb, "- #%d%s\n", e.number, marker)
+		}
+	}
+	sb.WriteString("---\n\n")
+	sb.WriteString("<!-- gh-stack-toc-end -->")
+	return sb.String()
+}
+
+// stripStackTOC removes a previously written TOC block from body, returning the
+// cleaned body. The block spans from stackTOCHeader through the closing sentinel
+// (inclusive), plus any surrounding blank lines added on injection.
+func stripStackTOC(body string) string {
+	start := strings.Index(body, stackTOCHeader)
+	if start < 0 {
+		return body
+	}
+	const endMarker = "<!-- gh-stack-toc-end -->"
+	end := strings.Index(body[start:], endMarker)
+	if end < 0 {
+		// No closing sentinel — strip from the header to end-of-line only.
+		nl := strings.Index(body[start:], "\n")
+		if nl < 0 {
+			return strings.TrimRight(body[:start], "\n ")
+		}
+		end = start + nl + 1
+	} else {
+		end = start + end + len(endMarker)
+	}
+	// Consume one trailing newline after the block if present.
+	if end < len(body) && body[end] == '\n' {
+		end++
+	}
+	return strings.TrimRight(body[:start], "\n ") + strings.TrimLeft(body[end:], "\n ")
+}
+
+// updatePRBodiesWithTOC prepends a stack TOC block to each open PR's body.
+// It is a best-effort operation: individual errors are logged as warnings and
+// do not abort the sync. Merged and queued PRs are skipped.
+func updatePRBodiesWithTOC(cfg *config.Config, client github.ClientOps, s *stack.Stack) {
+	// Gather open branches with PRs — must have >= 2 to warrant a TOC.
+	var openBranches []stack.BranchRef
+	for _, b := range s.Branches {
+		if b.PullRequest != nil && b.PullRequest.Number != 0 && !b.IsMerged() && !b.IsQueued() {
+			openBranches = append(openBranches, b)
+		}
+	}
+	if len(openBranches) < 2 {
+		return
+	}
+
+	// Fetch all PR data concurrently in one pass: we need both the title (for
+	// the TOC) and the current body (to strip+prepend the TOC block).
+	type prData struct {
+		title string
+		body  string
+		ok    bool
+	}
+	fetched := make(map[int]*prData, len(openBranches))
+	for _, b := range openBranches {
+		fetched[b.PullRequest.Number] = &prData{}
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxAPIConcurrency)
+	var mu sync.Mutex
+
+	for _, b := range openBranches {
+		wg.Add(1)
+		go func(br stack.BranchRef) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			pr, err := client.FindPRByNumber(br.PullRequest.Number)
+			if err != nil || pr == nil {
+				cfg.Warningf("Could not fetch PR #%d: %v", br.PullRequest.Number, err)
+				return
+			}
+			mu.Lock()
+			fetched[br.PullRequest.Number] = &prData{
+				title: pr.Title,
+				body:  pr.Body,
+				ok:    true,
+			}
+			mu.Unlock()
+		}(b)
+	}
+	wg.Wait()
+
+	// Build titles map for TOC generation.
+	titles := make(map[int]string, len(openBranches))
+	for num, d := range fetched {
+		if d.ok && d.title != "" {
+			titles[num] = d.title
+		}
+	}
+
+	// Write the TOC into each PR's body concurrently.
+	for _, b := range openBranches {
+		wg.Add(1)
+		go func(br stack.BranchRef) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			prNum := br.PullRequest.Number
+			d := fetched[prNum]
+			if !d.ok {
+				return // fetch failed; warning already logged
+			}
+
+			toc := generateStackTOC(s, prNum, titles)
+			if toc == "" {
+				return
+			}
+
+			// Strip any previous TOC block, then prepend the fresh one.
+			cleaned := stripStackTOC(d.body)
+			var newBody string
+			if strings.TrimSpace(cleaned) == "" {
+				newBody = toc
+			} else {
+				newBody = toc + "\n\n" + strings.TrimLeft(cleaned, "\n ")
+			}
+
+			if newBody == d.body {
+				return // nothing to update
+			}
+
+			if err := client.UpdatePRBody(prNum, newBody); err != nil {
+				cfg.Warningf("Could not update body for PR #%d: %v", prNum, err)
+			}
+		}(b)
+	}
+	wg.Wait()
 }

@@ -208,6 +208,21 @@ func (c *Client) UpdatePRBase(number int, base string) error {
 	return c.rest.Patch(path, bytes.NewReader(body), nil)
 }
 
+// UpdatePRBody replaces the body of an existing pull request.
+func (c *Client) UpdatePRBody(number int, body string) error {
+	type updatePRRequest struct {
+		Body string `json:"body"`
+	}
+
+	data, err := json.Marshal(updatePRRequest{Body: body})
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d", c.owner, c.repo, number)
+	return c.rest.Patch(path, bytes.NewReader(data), nil)
+}
+
 // MarkPRReadyForReview converts a draft pull request to ready for review.
 func (c *Client) MarkPRReadyForReview(prID string) error {
 	var mutation struct {
