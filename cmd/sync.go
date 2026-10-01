@@ -514,7 +514,8 @@ func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) stri
 
 	var sb strings.Builder
 	sb.WriteString(stackTOCHeader + "\n")
-	sb.WriteString("**Stack**\n")
+	sb.WriteString("---\n")
+	sb.WriteString("**Stack:**\n")
 	for _, e := range entries {
 		marker := ""
 		if e.number == currentPR {
@@ -531,6 +532,7 @@ func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) stri
 			fmt.Fprintf(&sb, "- #%d%s\n", e.number, marker)
 		}
 	}
+	sb.WriteString("<sub><i>Please review the PRs from <strong>top to bottom</strong>.</i></sub>")
 	sb.WriteString("---\n\n")
 	sb.WriteString("<!-- gh-stack-toc-end -->")
 	return sb.String()
@@ -650,7 +652,7 @@ func updatePRBodiesWithTOC(cfg *config.Config, client github.ClientOps, s *stack
 			if strings.TrimSpace(cleaned) == "" {
 				newBody = toc
 			} else {
-				newBody = toc + "\n\n" + strings.TrimLeft(cleaned, "\n ")
+				newBody = strings.TrimLeft(cleaned, "\n ") + "\n\n" + toc
 			}
 
 			if newBody == d.body {
