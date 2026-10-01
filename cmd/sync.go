@@ -508,7 +508,7 @@ func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) stri
 		})
 	}
 
-	if len(entries) < 2 {
+	if len(entries) < 1 {
 		return ""
 	}
 
@@ -575,7 +575,7 @@ func updatePRBodiesWithTOC(cfg *config.Config, client github.ClientOps, s *stack
 			openBranches = append(openBranches, b)
 		}
 	}
-	if len(openBranches) < 2 {
+	if len(openBranches) < 1 {
 		return
 	}
 
