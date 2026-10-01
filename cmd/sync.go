@@ -532,8 +532,7 @@ func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) stri
 			fmt.Fprintf(&sb, "- #%d%s\n", e.number, marker)
 		}
 	}
-	sb.WriteString("\n<sub>This is a stacked PR. <i>Please review the PRs from <strong>top to bottom</strong>.</i></sub>\n\n")
-	sb.WriteString("---\n\n")
+	sb.WriteString("\n<sub>This is a stacked PR. <i>Please review the PRs from <strong>top to bottom</strong>.</i></sub>\n")
 	sb.WriteString("<!-- gh-stack-toc-end -->")
 	return sb.String()
 }
