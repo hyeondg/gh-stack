@@ -470,11 +470,11 @@ func generatePRBody(commitBody string, templateContent string) string {
 		parts = append(parts, commitBody)
 	}
 
-	footer := fmt.Sprintf(
-		"<sub>Stack created with <a href=\"https://github.com/github/gh-stack\">GitHub Stacks CLI</a> • <a href=\"%s\">Give Feedback 💬</a></sub>",
-		feedbackURL,
-	)
-	parts = append(parts, footer)
+	// footer := fmt.Sprintf(
+	// 	"<sub>Stack created with <a href=\"https://github.com/github/gh-stack\">GitHub Stacks CLI</a> • <a href=\"%s\">Give Feedback 💬</a></sub>",
+	// 	feedbackURL,
+	// )
+	// parts = append(parts, footer)
 
 	return strings.Join(parts, "\n\n")
 }

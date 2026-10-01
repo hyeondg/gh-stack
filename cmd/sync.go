@@ -519,7 +519,7 @@ func generateStackTOC(s *stack.Stack, currentPR int, titles map[int]string) stri
 	for _, e := range entries {
 		marker := ""
 		if e.number == currentPR {
-			marker = " ← _you are here_"
+			marker = " ⬅️ _you are here_"
 		}
 		label := titles[e.number]
 		if label == "" {
