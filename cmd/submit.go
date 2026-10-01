@@ -250,6 +250,9 @@ func runSubmit(cfg *config.Config, opts *submitOptions) error {
 	updateBaseSHAs(s)
 	_ = syncStackPRs(cfg, s)
 
+	// Write stack TOC into each open PR's body so reviewers can navigate the stack.
+	updatePRBodiesWithTOC(cfg, client, s)
+
 	if err := stack.Save(gitDir, sf); err != nil {
 		return handleSaveError(cfg, err)
 	}
@@ -467,13 +470,13 @@ func generatePRBody(commitBody string, templateContent string) string {
 		parts = append(parts, commitBody)
 	}
 
-	footer := fmt.Sprintf(
-		"<sub>Stack created with <a href=\"https://github.com/github/gh-stack\">GitHub Stacks CLI</a> • <a href=\"%s\">Give Feedback 💬</a></sub>",
-		feedbackURL,
-	)
-	parts = append(parts, footer)
+	// footer := fmt.Sprintf(
+	// 	"<sub>Stack created with <a href=\"https://github.com/github/gh-stack\">GitHub Stacks CLI</a> • <a href=\"%s\">Give Feedback 💬</a></sub>",
+	// 	feedbackURL,
+	// )
+	// parts = append(parts, footer)
 
-	return strings.Join(parts, "\n\n---\n\n")
+	return strings.Join(parts, "\n\n")
 }
 
 // humanize replaces hyphens and underscores with spaces.
